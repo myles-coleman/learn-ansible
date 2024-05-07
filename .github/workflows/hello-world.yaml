@@ -1,0 +1,12 @@
+name: Hello World
+on: [push]
+jobs:
+    build:
+        runs-on: [self-hosted, Linux]
+
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
+
+            - name: Echo Hello World
+              run: "Hello World!"

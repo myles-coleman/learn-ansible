@@ -42,6 +42,12 @@
         mode: '777'
         remote_src: yes
 
+    - name: Check if runner is already configured
+      stat:
+        path: "/home/{{ ansible_user }}/actions-runner/.runner"
+      register: runner_status
+
+
     - name: Configure runner
       become: no
       command: "./config.sh --url https://github.com/{{ github_owner }}/{{ github_repo}} --token {{ runner_token }} --unattended"
