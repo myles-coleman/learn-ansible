@@ -19,21 +19,37 @@
           - curl
           - jq
 
-    - name: Download runner package
-      get_url:
-        url: "https://github.com/actions/runner/releases/download/v2.316.0/actions-runner-linux-arm64-2.316.0.tar.gz"
-        dest: "/tmp/actions-runner.tar.gz"
-
+    #The file module is automatically idempotent, so we can use it to check if the directory already exists
     - name: Create a directory for the runner and install
       file:
         path: "/home/{{ ansible_user }}/actions-runner"
         state: directory
+
+    #Checks permissions of the directory and changes them if they are incorrect
+    - name: Check if the permissions of the actions-runner directory are correct
+      stat:
+        path: "/home/{{ ansible_user }}/actions-runner"
+      register: runner_dir
 
     - name: Change permissions of actions-runner directory
       file:
         path: "/home/{{ ansible_user }}/actions-runner"
         mode: '755'
         recurse: yes
+      when: runner_dir.stat.exists and runner_dir.stat.mode != '0755'
+
+    #Check if the runner package is already downloaded before downloading it and extracting it
+    - name: Check if runner package is downloaded
+      stat:
+        path: "/tmp/actions-runner.tar.gz"
+      register: runner_package
+
+    - name: Download runner package
+      get_url:
+        url: "https://github.com/actions/runner/releases/download/v2.316.0/actions-runner-linux-arm64-2.316.0.tar.gz"
+        dest: "/tmp/actions-runner.tar.gz"
+      when: not runner_package.stat.exists
+      register: download_result
 
     - name: Extract runner package
       unarchive:
@@ -41,12 +57,13 @@
         dest: "/home/{{ ansible_user }}/actions-runner"
         mode: '777'
         remote_src: yes
+      when: download_result.changed
 
+    #Check if the runner is already configured before configuring it
     - name: Check if runner is already configured
       stat:
         path: "/home/{{ ansible_user }}/actions-runner/.runner"
       register: runner_status
-
 
     - name: Configure runner
       become: no
@@ -55,8 +72,29 @@
         chdir: "/home/{{ ansible_user }}/actions-runner"
       when: not runner_status.stat.exists
 
-    - name: Run Runner
+    #Check if the service is installed before installing it
+    - name: Check if runner service is already installed
+      stat:
+        path: "/home/{{ ansible_user }}/actions-runner/svc.sh"
+      register: runner_service
+
+    - name: Install runner service
       become: no
-      command: "./run.sh"
+      command: "sudo ./svc.sh install"
       args:
         chdir: "/home/{{ ansible_user }}/actions-runner"
+      when: not runner_service.stat.exists
+
+    #Check if runner service is running before starting it
+    - name: Check if runner service is running
+      command: "sudo ./svc.sh status"
+      args:
+        chdir: "/home/{{ ansible_user }}/actions-runner"
+      register: runner_service_status
+
+    - name: Start runner service
+      become: no
+      command: "sudo ./svc.sh start"
+      args:
+        chdir: "/home/{{ ansible_user }}/actions-runner"
+      when: runner_service_status.stdout.find('inactive') != -1
