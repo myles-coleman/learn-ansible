@@ -190,7 +190,7 @@
     - name: Check if _work directory exists
       stat:
         path: "/home/{{ ansible_user }}/actions-runner/_work"
-      register: work_dir
+      register: work_dir 
 
     - name: Create _work directory
       file:
