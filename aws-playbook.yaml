@@ -117,7 +117,7 @@
     github_repo: 'learn-ansible'
     runner_token: "{{ lookup('env','RUNNER_TOKEN') }}"
     runner_name: 'ansible-runner'
-    runner_work_dir: '_work'
+    runner_work_dir: 'actions-runner'
     ansible_ssh_private_key_file: "~/.ssh/myles-ansible-key.pem"
     ansible_ssh_common_args: '-o StrictHostKeyChecking=no'
     ansible_user: 'ec2-user'    
@@ -150,7 +150,7 @@
         path: "/home/{{ ansible_user }}/actions-runner"
         mode: '755'
         recurse: yes
-      when: runner_dir.stat.exists and runner_dir.stat.mode != '0755'
+      #when: runner_dir.stat.exists and runner_dir.stat.mode != '0755'
 
     #Check if the runner package is already downloaded before downloading it and extracting it
     - name: Check if runner package is downloaded
