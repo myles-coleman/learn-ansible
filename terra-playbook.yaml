@@ -76,17 +76,22 @@
       when: not runner_status.stat.exists
 
     #add task for checking if the _work directory exists and setting permissions
-    # - name: Check if _work directory exists
-    #   stat:
-    #     path: "/home/{{ ansible_user }}/actions-runner/_work"
-    #   register: work_dir 
+    - name: Check if _work directory exists
+      stat:
+        path: "/home/{{ ansible_user }}/actions-runner/_work"
+      register: work_dir 
 
-    # - name: Create _work directory
-    #   file:
-    #     path: "/home/{{ ansible_user }}/actions-runner/_work"
-    #     state: directory
-    #     mode: '755'
-    #   when: not work_dir.stat.exists
+    - name: Create _work directory
+      file:
+        path: "/home/{{ ansible_user }}/actions-runner/_work"
+        state: directory
+        mode: '755'
+      when: not work_dir.stat.exists
+    
+    - name: Change ownership of _work directory
+      command: chown -R ec2-user:ec2-user /home/{{ ansible_user }}/actions-runner/_work
+      become: yes
+      when: not work_dir.stat.exists
 
     #Check if the service is installed before installing it
     - name: Check if runner service is already installed
