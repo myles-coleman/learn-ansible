@@ -1,0 +1,118 @@
+- name: Runner
+  hosts: runner
+  become: yes
+  vars:
+    github_owner: 'myles-coleman'
+    github_repo: 'learn-ansible'
+    runner_token: "{{ lookup('env','RUNNER_TOKEN') }}"
+    runner_name: 'ansible-runner'
+    runner_work_dir: 'actions-runner'
+    ansible_ssh_private_key_file: "~/.ssh/myles-ansible-key.pem"
+    ansible_ssh_common_args: '-o StrictHostKeyChecking=no'
+    ansible_user: 'ec2-user'    
+
+  tasks:
+    - name: Update system packages
+      dnf:
+        update_cache: yes
+
+    - name: Install necessary packages
+      dnf:
+        name:
+          - libicu
+          - jq
+
+    #The file module is automatically idempotent, so we can use it to check if the directory already exists
+    - name: Create a directory for the runner and install
+      file:
+        path: "/home/{{ ansible_user }}/actions-runner"
+        state: directory
+
+    #Checks permissions of the directory and changes them if they are incorrect
+    - name: Check if the permissions of the actions-runner directory are correct
+      stat:
+        path: "/home/{{ ansible_user }}/actions-runner"
+      register: runner_dir
+
+    - name: Change permissions of actions-runner directory
+      file:
+        path: "/home/{{ ansible_user }}/actions-runner"
+        mode: '755'
+        recurse: yes
+      #when: runner_dir.stat.exists and runner_dir.stat.mode != '0755'
+
+    #Check if the runner package is already downloaded before downloading it and extracting it
+    - name: Check if runner package is downloaded
+      stat:
+        path: "/tmp/actions-runner.tar.gz"
+      register: runner_package
+
+    - name: Download runner package
+      get_url:
+        url: "https://github.com/actions/runner/releases/download/v2.316.1/actions-runner-linux-x64-2.316.1.tar.gz"
+        dest: "/tmp/actions-runner.tar.gz"
+      when: not runner_package.stat.exists
+      register: download_result
+
+    - name: Extract runner package
+      unarchive:
+        src: "/tmp/actions-runner.tar.gz"
+        dest: "/home/{{ ansible_user }}/actions-runner"
+        mode: '777'
+        remote_src: yes
+      when: download_result.changed
+
+    #Check if the runner is already configured before configuring it
+    - name: Check if runner is already configured
+      stat:
+        path: "/home/{{ ansible_user }}/actions-runner/.runner"
+      register: runner_status
+
+    - name: Configure runner
+      become: no
+      command: "./config.sh --url https://github.com/{{ github_owner }}/{{ github_repo}} --token {{ runner_token }} --unattended"
+      args:
+        chdir: "/home/{{ ansible_user }}/actions-runner"
+      when: not runner_status.stat.exists
+
+    #add task for checking if the _work directory exists and setting permissions
+    - name: Check if _work directory exists
+      stat:
+        path: "/home/{{ ansible_user }}/actions-runner/_work"
+      register: work_dir 
+
+    - name: Create _work directory
+      file:
+        path: "/home/{{ ansible_user }}/actions-runner/_work"
+        state: directory
+        mode: '755'
+      when: not work_dir.stat.exists
+
+    #Check if the service is installed before installing it
+    - name: Check if runner service is already installed
+      command: "sudo ./svc.sh status"
+      args:
+        chdir: "/home/{{ ansible_user }}/actions-runner"
+      register: runner_service_status
+      ignore_errors: True
+
+    - name: Install runner service
+      become: no
+      command: "sudo ./svc.sh install"
+      args:
+        chdir: "/home/{{ ansible_user }}/actions-runner"
+      when: "'not installed' in runner_service_status.stdout"
+
+    #Check if runner service is running before starting it
+    - name: Check if runner service is running
+      command: "sudo ./svc.sh status"
+      args:
+        chdir: "/home/{{ ansible_user }}/actions-runner"
+      register: runner_service_status
+
+    - name: Start runner service
+      become: no
+      command: "sudo ./svc.sh start"
+      args:
+        chdir: "/home/{{ ansible_user }}/actions-runner"
+      when: runner_service_status.stdout.find('inactive') != -1
