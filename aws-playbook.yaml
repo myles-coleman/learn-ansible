@@ -34,7 +34,6 @@
       debug:
         var: security_group
 
-    #Keypair creation
     - name: Check if the key pair already exists
       amazon.aws.ec2_key_info:
         profile: "{{ profile }}"
@@ -63,7 +62,6 @@
       register: key_pair
       when: not key_pair_check.keypairs
 
-    #EC2 instance creation
     - name: Gather EC2 facts
       amazon.aws.ec2_instance_info:
         profile: "{{ profile }}"
@@ -100,14 +98,54 @@
           Project: "DOB"
           Application: "GitHub-Runner"
       when: "(ec2_facts.instances | selectattr('state.name', 'equalto', 'running') | list | count) == 0"
-    
+      register: ec2_instance
+
+    - name: Determine instance ID to wait for
+      set_fact:
+        instance_id_to_wait: "{{ ec2_instance.instance_ids[0] if ec2_instance.changed else (ec2_facts.instances | selectattr('state.name', 'equalto', 'pending') | list | first).instance_id }}"
+      when: ec2_instance.changed or (ec2_facts.instances | selectattr('state.name', 'equalto', 'pending') | list | count) > 0
+
+    - name: Wait for the instance to be running
+      amazon.aws.ec2_instance_info:
+        profile: "{{ profile }}"
+        region: "{{ region }}"
+        filters:
+          instance-id: "{{ instance_id_to_wait }}"
+      register: instance_facts
+      until: instance_facts.instances[0].state.name == 'running'
+      retries: 10
+      delay: 30
+      when: instance_id_to_wait is defined
+
+    - name: Refresh EC2 facts to ensure the instance is running
+      amazon.aws.ec2_instance_info:
+        profile: "{{ profile }}"
+        region: "{{ region }}"
+        filters:
+          "tag:Name": "Myles-Self-Hosted-Runner"
+          "tag:Owner": "Myles"
+          "tag:Client": "Internal"
+          "tag:Environment": "Test"
+          "tag:Project": "DOB"
+          "tag:Application": "GitHub-Runner"
+      register: refreshed_ec2_facts
+
+    - name: Wait for SSH to be available
+      wait_for:
+        host: "{{ item.network_interfaces[0].association.public_ip }}"
+        port: 22
+        delay: 10
+        timeout: 300
+        state: started
+      loop: "{{ refreshed_ec2_facts.instances }}"
+      when: item.state.name == 'running'
+
     - name: Add new instance to host group
       add_host:
         hostname: "{{ item.network_interfaces[0].association.public_ip }}"
         groupname: ec2hosts
-      loop: "{{ ec2_facts.instances }}"
+      loop: "{{ refreshed_ec2_facts.instances }}"
       when: item.state.name == 'running'  # Ensure the instance is running
-
 
 - name: Runner
   hosts: ec2hosts
@@ -120,7 +158,7 @@
     runner_work_dir: 'actions-runner'
     ansible_ssh_private_key_file: "~/.ssh/myles-ansible-key.pem"
     ansible_ssh_common_args: '-o StrictHostKeyChecking=no'
-    ansible_user: 'ec2-user'    
+    ansible_user: 'ec2-user'
 
   tasks:
     - name: Update system packages
@@ -133,26 +171,32 @@
           - libicu
           - jq
 
-    #The file module is automatically idempotent, so we can use it to check if the directory already exists
     - name: Create a directory for the runner and install
       file:
         path: "/home/{{ ansible_user }}/actions-runner"
         state: directory
 
-    #Checks permissions of the directory and changes them if they are incorrect
     - name: Check if the permissions of the actions-runner directory are correct
       stat:
         path: "/home/{{ ansible_user }}/actions-runner"
       register: runner_dir
 
-    - name: Change permissions of actions-runner directory
+    - name: Check current ownership and permissions of actions-runner directory
+      stat:
+        path: "/home/{{ ansible_user }}/actions-runner"
+      register: actions_runner_dir
+
+    - name: Change ownership and permissions of actions-runner directory
       file:
         path: "/home/{{ ansible_user }}/actions-runner"
-        mode: '755'
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: '0755'
         recurse: yes
-      #when: runner_dir.stat.exists and runner_dir.stat.mode != '0755'
+      when: actions_runner_dir.stat.pw_name != "{{ ansible_user }}" or
+            actions_runner_dir.stat.gr_name != "{{ ansible_user }}" or
+            actions_runner_dir.stat.mode != '0755'
 
-    #Check if the runner package is already downloaded before downloading it and extracting it
     - name: Check if runner package is downloaded
       stat:
         path: "/tmp/actions-runner.tar.gz"
@@ -169,11 +213,27 @@
       unarchive:
         src: "/tmp/actions-runner.tar.gz"
         dest: "/home/{{ ansible_user }}/actions-runner"
-        mode: '777'
+        mode: '0755'
         remote_src: yes
       when: download_result.changed
 
-    #Check if the runner is already configured before configuring it
+    - name: Ensure _diag directory exists
+      file:
+        path: "/home/{{ ansible_user }}/actions-runner/_diag"
+        state: directory
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: '0755'
+
+    - name: Ensure permissions of all extracted files are correct
+      file:
+        path: "/home/{{ ansible_user }}/actions-runner"
+        state: directory
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: '0755'
+        recurse: yes
+
     - name: Check if runner is already configured
       stat:
         path: "/home/{{ ansible_user }}/actions-runner/.runner"
@@ -181,49 +241,48 @@
 
     - name: Configure runner
       become: no
-      command: "./config.sh --url https://github.com/{{ github_owner }}/{{ github_repo}} --token {{ runner_token }} --unattended"
+      command: "./config.sh --url https://github.com/{{ github_owner }}/{{ github_repo }} --token {{ runner_token }} --unattended"
       args:
         chdir: "/home/{{ ansible_user }}/actions-runner"
       when: not runner_status.stat.exists
 
-    #add task for checking if the _work directory exists and setting permissions
     - name: Check if _work directory exists
       stat:
         path: "/home/{{ ansible_user }}/actions-runner/_work"
-      register: work_dir 
+      register: work_dir
 
     - name: Create _work directory
       file:
         path: "/home/{{ ansible_user }}/actions-runner/_work"
         state: directory
-        mode: '755'
+        mode: '0755'
       when: not work_dir.stat.exists
 
-    #Check if the service is installed before installing it
     - name: Check if runner service is already installed
-      command: "sudo ./svc.sh status"
+      command: "./svc.sh status"
       args:
         chdir: "/home/{{ ansible_user }}/actions-runner"
       register: runner_service_status
+      changed_when: false
       ignore_errors: True
 
     - name: Install runner service
-      become: no
-      command: "sudo ./svc.sh install"
+      become: yes
+      command: "./svc.sh install"
       args:
         chdir: "/home/{{ ansible_user }}/actions-runner"
       when: "'not installed' in runner_service_status.stdout"
 
-    #Check if runner service is running before starting it
     - name: Check if runner service is running
-      command: "sudo ./svc.sh status"
+      command: "./svc.sh status"
       args:
         chdir: "/home/{{ ansible_user }}/actions-runner"
-      register: runner_service_status
+      register: runner_service_running_status
+      changed_when: false
 
     - name: Start runner service
-      become: no
-      command: "sudo ./svc.sh start"
+      become: yes
+      command: "./svc.sh start"
       args:
         chdir: "/home/{{ ansible_user }}/actions-runner"
       when: runner_service_status.stdout.find('inactive') != -1

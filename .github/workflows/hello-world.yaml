@@ -1,5 +1,11 @@
 name: Hello World
-on: [push]
+
+on:
+    push:
+        branches:
+            - main
+    workflow_dispatch:
+
 jobs:
     build:
         runs-on: [self-hosted, Linux]
@@ -9,4 +15,4 @@ jobs:
               uses: actions/checkout@v4
 
             - name: Echo Hello World
-              run: echo Hello World!!!
+              run: "echo 'Hello from runner: ${{ runner.name }}'"
